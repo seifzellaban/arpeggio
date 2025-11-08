@@ -280,7 +280,9 @@ def draw_title_bar():
     screen.blit(title_text, (300, 20))
 
 
+
 run = True
+keys_pressed = set()
 while run:
     left_dict = {
         "Z": f"C{left_oct}",
@@ -364,25 +366,33 @@ while run:
                     play_note_with_limiter(white_sounds[i], 127)
                     active_whites.append([i, 30])
 
-        if event.type == pygame.TEXTINPUT:
-            if event.text.upper() in left_dict:
-                if left_dict[event.text.upper()][1] == "#":
-                    index = black_labels.index(left_dict[event.text.upper()])
-                    play_note_with_limiter(black_sounds[index], 127)
-                    active_blacks.append([index, 30])
-                else:
-                    index = white_notes.index(left_dict[event.text.upper()])
-                    play_note_with_limiter(white_sounds[index], 127)
-                    active_whites.append([index, 30])
-            if event.text.upper() in right_dict:
-                if right_dict[event.text.upper()][1] == "#":
-                    index = black_labels.index(right_dict[event.text.upper()])
-                    play_note_with_limiter(black_sounds[index], 127)
-                    active_blacks.append([index, 30])
-                else:
-                    index = white_notes.index(right_dict[event.text.upper()])
-                    play_note_with_limiter(white_sounds[index], 127)
-                    active_whites.append([index, 30])
+        if event.type == pygame.KEYDOWN:
+            key = event.unicode.upper()
+            if key not in keys_pressed:
+                keys_pressed.add(key)
+                if key in left_dict:
+                    if left_dict[key][1] == "#":
+                        index = black_labels.index(left_dict[key])
+                        play_note_with_limiter(black_sounds[index], 127)
+                        active_blacks.append([index, 30])
+                    else:
+                        index = white_notes.index(left_dict[key])
+                        play_note_with_limiter(white_sounds[index], 127)
+                        active_whites.append([index, 30])
+                if key in right_dict:
+                    if right_dict[key][1] == "#":
+                        index = black_labels.index(right_dict[key])
+                        play_note_with_limiter(black_sounds[index], 127)
+                        active_blacks.append([index, 30])
+                    else:
+                        index = white_notes.index(right_dict[key])
+                        play_note_with_limiter(white_sounds[index], 127)
+                        active_whites.append([index, 30])
+
+        if event.type == pygame.KEYUP:
+            key = event.unicode.upper()
+            if key in keys_pressed:
+                keys_pressed.remove(key)
 
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_KP_0:
