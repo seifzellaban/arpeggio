@@ -1,3 +1,5 @@
+from math import sqrt
+
 import mido
 import pygame
 from pygame import mixer
@@ -47,7 +49,7 @@ black_notes = pl.black_notes
 black_labels = pl.black_labels
 
 
-LIMITER_THRESHOLD = 28
+LIMITER_THRESHOLD = 16
 BASE_NOTE_VOLUME = 0.6
 
 
@@ -112,7 +114,7 @@ def load_midi_file(filepath):
 
 def play_note_with_limiter(sound_to_play, velocity):
     """
-    Plays a sound with dynamic volume limiting.
+    Plays a sound with a more granular "soft" dynamic limiter.
     Assumes g_active_channels has been pruned *outside* this function.
     """
     global g_active_channels
@@ -120,18 +122,26 @@ def play_note_with_limiter(sound_to_play, velocity):
 
     limiter_factor = 1.0
     if num_playing > LIMITER_THRESHOLD:
-        limiter_factor = (LIMITER_THRESHOLD / num_playing) * 2
+        ratio = LIMITER_THRESHOLD / num_playing
+        limiter_factor = sqrt(ratio)
+
+        # --- (old logic for comparison) ---
+        # limiter_factor = LIMITER_THRESHOLD / (num_playing * 2 / pi)
+        # The sqrt(ratio) will feel much smoother.
 
     velocity_factor = velocity / 127.0
-    final_volume = BASE_NOTE_VOLUME * velocity_factor * limiter_factor
+
+    final_volume = (BASE_NOTE_VOLUME * limiter_factor) * velocity_factor
 
     channel = pygame.mixer.find_channel()
     if channel:
         channel.set_volume(final_volume)
         channel.play(sound_to_play)
         g_active_channels.append(channel)
+        # print(len(g_active_channels))
     else:
         print("WARNING: No free channels, note dropped.")
+        pass
 
 
 def draw_piano(whites, blacks):
@@ -376,7 +386,9 @@ while run:
 
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_KP_0:
-                midi_file_path = "assets/MIDI/F1_(From_F1®_The_Movie)_–_Hans_Zimmer.mid"
+                midi_file_path = (
+                    "assets/MIDI/Thomas_Bergersen_-_Made_of_Air_(2_Pianos).mid"
+                )
                 if load_midi_file(midi_file_path):
                     print("Starting playback...")
                     playback_active = True
