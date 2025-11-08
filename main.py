@@ -36,9 +36,15 @@ right_oct = 5
 g_active_channels = []
 
 playback_messages = []
-playback_start_time = 0
+playback_start_time = 1000 * 60 * 2 + 15 * 1000
+# playback_start_time = 0
 current_msg_index = 0
 playback_active = False
+
+# --- MIDI Playback/Pause State ---
+midi_loaded = False
+midi_file_path = "assets/MIDI/Thomas_Bergersen_-_Made_of_Air_(2_Pianos).mid"
+
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 left_hand = pl.left_hand
@@ -112,6 +118,19 @@ def load_midi_file(filepath):
     return True
 
 
+def find_first_note_after(time_ms):
+    """Finds the index of the first note at or after time_ms."""
+    global playback_messages
+    if not playback_messages:
+        return 0
+    # Use enumerate to get both index (i) and message (msg)
+    for i, msg in enumerate(playback_messages):
+        msg_time = msg[0]  # msg[0] is the timestamp
+        if msg_time >= time_ms:
+            return i  # Return the index of the first note found
+    return len(playback_messages)  # No note found, return end of song
+
+
 def play_note_with_limiter(sound_to_play, velocity):
     """
     Plays a sound with a more granular "soft" dynamic limiter.
@@ -125,12 +144,7 @@ def play_note_with_limiter(sound_to_play, velocity):
         ratio = LIMITER_THRESHOLD / num_playing
         limiter_factor = sqrt(ratio)
 
-        # --- (old logic for comparison) ---
-        # limiter_factor = LIMITER_THRESHOLD / (num_playing * 2 / pi)
-        # The sqrt(ratio) will feel much smoother.
-
     velocity_factor = velocity / 127.0
-
     final_volume = (BASE_NOTE_VOLUME * limiter_factor) * velocity_factor
 
     channel = pygame.mixer.find_channel()
@@ -138,7 +152,6 @@ def play_note_with_limiter(sound_to_play, velocity):
         channel.set_volume(final_volume)
         channel.play(sound_to_play)
         g_active_channels.append(channel)
-        # print(len(g_active_channels))
     else:
         print("WARNING: No free channels, note dropped.")
         pass
@@ -272,6 +285,12 @@ def draw_title_bar():
         "Left/Right Arrows Change Right Hand", True, "black"
     )
     screen.blit(instruction_text2, (WIDTH - 500, 50))
+
+    # --- Updated text label ---
+    instruction_text3 = medium_font.render("Spacebar to Play/Pause/Seek", True, "black")
+    screen.blit(instruction_text3, (WIDTH - 500, 90))
+    # --------------------------
+
     img = pygame.transform.scale(pygame.image.load("assets/logo.png"), [150, 150])
     screen.blit(img, (0, -34))
     title_text = font.render("A Project of the Resonance Committee.", True, "white")
@@ -313,8 +332,10 @@ while run:
     timer.tick(fps)
     screen.fill("gray")
 
+    # --- Prune dead channels ---
     g_active_channels = [ch for ch in g_active_channels if ch.get_busy()]
 
+    # --- MIDI Playback Logic ---
     if playback_active and current_msg_index < len(playback_messages):
         now_ms = pygame.time.get_ticks() - playback_start_time
 
@@ -336,18 +357,22 @@ while run:
 
                 current_msg_index += 1
             else:
+                # This note is in the future, stop checking for now
                 break
 
         if current_msg_index >= len(playback_messages):
             print("Playback finished.")
             playback_active = False
+            playback_start_time = 0
 
+    # --- Drawing Functions ---
     white_keys, black_keys, active_whites, active_blacks = draw_piano(
         active_whites, active_blacks
     )
     draw_hands(right_oct, left_oct, right_hand, left_hand)
     draw_title_bar()
 
+    # --- Event Loop ---
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             run = False
@@ -385,18 +410,64 @@ while run:
                     active_whites.append([index, 30])
 
         if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_KP_0:
-                midi_file_path = (
-                    "assets/MIDI/Thomas_Bergersen_-_Made_of_Air_(2_Pianos).mid"
-                )
-                if load_midi_file(midi_file_path):
-                    print("Starting playback...")
-                    playback_active = True
-                    playback_start_time = pygame.time.get_ticks()
-                    current_msg_index = 0
-                else:
-                    print(f"Could not play {midi_file_path}")
+            # --- THIS IS THE FIXED PLAY/PAUSE/SEEK LOGIC ---
+            if event.key == pygame.K_SPACE:
+                # 1. Load MIDI on first press
+                if not midi_loaded:
+                    print(f"Loading {midi_file_path}...")
+                    if load_midi_file(midi_file_path):
+                        print("MIDI file loaded.")
+                        midi_loaded = True
+                    else:
+                        print(f"Could not load {midi_file_path}")
+                        continue  # Skip if load failed
 
+                # 2. Toggle Play/Pause/Restart logic
+                if midi_loaded:
+                    if not playback_active:
+                        # --- We are PAUSED or STOPPED, so let's PLAY ---
+                        playback_active = True
+
+                        # Check if we're at the beginning or end (i.e., NOT paused)
+                        if current_msg_index == 0 or current_msg_index >= len(
+                            playback_messages
+                        ):
+                            # START or RESTART
+                            START_MS = playback_start_time
+
+                            print(
+                                f"Starting/Restarting playback from {START_MS / 1000.0:.2f}s..."
+                            )
+
+                            # A) SEEK: Find the correct note index to start from
+                            current_msg_index = find_first_note_after(START_MS)
+
+                            # B) SET TIME: Adjust start time to match the seek time
+                            playback_start_time = pygame.time.get_ticks() - START_MS
+
+                        else:
+                            # RESUME (we were paused mid-song)
+                            # Get the timestamp of the note we paused at
+                            msg_time_ms_to_resume_at = playback_messages[
+                                current_msg_index
+                            ][0]
+
+                            # Adjust start_time so 'now_ms' matches the note's time
+                            playback_start_time = (
+                                pygame.time.get_ticks() - msg_time_ms_to_resume_at
+                            )
+                            print(
+                                f"Resuming playback from {msg_time_ms_to_resume_at / 1000.0:.2f}s"
+                            )
+
+                    else:
+                        # --- We are PLAYING, so let's PAUSE ---
+                        print("Pausing playback.")
+                        playback_active = False
+                        # current_msg_index automatically becomes our "bookmark"
+            # ----------------------------------------------------
+
+            # Octave controls
             if event.key == pygame.K_RIGHT:
                 if right_oct < 8:
                     right_oct += 1
