@@ -29,6 +29,8 @@ timer = pygame.time.Clock()
 WIDTH = 52 * 35
 HEIGHT = 550
 FADEOUT_TIME = 300  # Used for smoother stop
+LOOK_AHEAD_MS = 4000
+FALL_DISTANCE = HEIGHT - 300 - 120  # Distance notes fall (from header to keys)
 screen = pygame.display.set_mode([WIDTH, HEIGHT])
 white_sounds = []
 black_sounds = []
@@ -66,6 +68,8 @@ BASE_NOTE_VOLUME = 0.4
 
 WHITE_NOTE_COLOR = (0, 255, 255)  # Cyan
 BLACK_NOTE_COLOR = (255, 0, 255)  # Magenta
+WHITE_NOTE_HIT_COLOR = (0, 200, 0)  # Green when hit
+BLACK_NOTE_HIT_COLOR = (0, 255, 0)  # Bright green when hit
 
 
 
@@ -130,7 +134,8 @@ def load_midi_file(filepath):
                             note_type = "white"
                         else:
                             continue
-                        playback_messages.append((start_ms, duration_ms, index, note_type, velocity))
+                        end_ms = start_ms + duration_ms
+                        playback_messages.append((start_ms, end_ms, index, note_type, velocity))
         elif msg.type == "note_off":
             if msg.note in active_notes:
                 start_sec, velocity = active_notes.pop(msg.note)
@@ -147,7 +152,8 @@ def load_midi_file(filepath):
                         note_type = "white"
                     else:
                         continue
-                    playback_messages.append((start_ms, duration_ms, index, note_type, velocity))
+                    end_ms = start_ms + duration_ms
+                    playback_messages.append((start_ms, end_ms, index, note_type, velocity))
 
     playback_messages.sort(key=lambda x: x[0])
     current_msg_index = 0
@@ -169,10 +175,6 @@ def play_note_with_limiter(sound_to_play, velocity):
         ratio = LIMITER_THRESHOLD / num_playing
         limiter_factor = sqrt(ratio)
 
-        # --- (old logic for comparison) ---
-        # limiter_factor = LIMITER_THRESHOLD / (num_playing * 2 / pi)
-        # The sqrt(ratio) will feel much smoother.
-
     velocity_factor = velocity / 127.0
 
     final_volume = (BASE_NOTE_VOLUME * limiter_factor) * velocity_factor
@@ -183,52 +185,98 @@ def play_note_with_limiter(sound_to_play, velocity):
         channel.play(sound_to_play)
         g_active_channels.append(channel)
         return channel
-        # print(len(g_active_channels))
     else:
         print("WARNING: No free channels, note dropped.")
         return None
 
 
 def draw_falling_notes(now_ms):
-    # Look ahead in the playback messages (e.g., 4 seconds)
-    look_ahead_ms = 4000
+    """
+    Draw notes where the BOTTOM (start_time) is fixed at key level,
+    and the TOP (end_time) extends upward based on duration.
+    Notes change color when they hit the keys and disappear when end_time reaches keys.
+    """
+    look_ahead_ms = LOOK_AHEAD_MS
+    key_line_y = HEIGHT - 300
     visible_notes = []
+    
     for i in range(current_msg_index, len(playback_messages)):
-        start_ms, duration_ms, index, note_type, velocity = playback_messages[i]
+        start_ms, end_ms, index, note_type, velocity = playback_messages[i]
+        
+        # Skip notes where end_time has already passed (note completely played)
+        if end_ms < now_ms:
+            continue
+            
         if start_ms > now_ms + look_ahead_ms:
-            break  # Stop if the note is too far in the future
-        if start_ms >= now_ms:
+            break
+        
+        # Show notes from look-ahead until end_time reaches keys
+        if start_ms <= now_ms + look_ahead_ms:
             visible_notes.append(playback_messages[i])
 
-    for start_ms, duration_ms, index, note_type, velocity in visible_notes:
-        time_to_impact = start_ms - now_ms
-        # Calculate Y position based on time to impact
-        # The note should be at the top of the piano (y=100) when time_to_impact is look_ahead_ms
-        # and at the bottom (y=HEIGHT-300) when time_to_impact is 0
-        y_pos = 100 + ((look_ahead_ms - time_to_impact) / look_ahead_ms) * (
-            HEIGHT - 400
-        )
+    # Sort by height descending (taller notes behind)
+    visible_notes.sort(key=lambda x: -(x[1] - x[0]))
 
+    for start_ms, end_ms, index, note_type, velocity in visible_notes:
+        # Calculate the BOTTOM of the note (where it will hit the keys)
+        time_to_impact = start_ms - now_ms
+        progress = 1 - (time_to_impact / look_ahead_ms)
+        bottom_y = 120 + (progress * FALL_DISTANCE)  # Bottom of note at key level when played
+        
+        # Calculate note height based on duration
+        duration_ms = end_ms - start_ms
+        height = max(1, (duration_ms / 1000) * 50)  # 50 pixels per second
+        
+        # Top of note extends upward from the bottom
+        top_y = bottom_y - height
+        
+        # Determine color based on whether note has been hit
+        note_has_been_hit = now_ms >= start_ms
+        
         # Calculate X position and width
         if note_type == "white":
-            x_pos = index * 35 + 7.5  # Center the narrower note in the 35px key
+            x_pos = index * 35 + 7.5
             width = 20
-            color = WHITE_NOTE_COLOR
+            color = WHITE_NOTE_HIT_COLOR if note_has_been_hit else WHITE_NOTE_COLOR
         else:  # black
-            # Use pre-calculated positions matching the piano key layout
             black_x_positions = [
                 23,93,163,198,233,303,338,408,443,478,548,583,653,688,723,
                 793,828,898,933,968,1038,1073,1143,1178,1213,1283,1318,1388,1423,1458,
                 1528,1563,1633,1668,1703,1773
             ]
-            x_pos = black_x_positions[index] + 2  # Center the 20px note in the 24px key
+            x_pos = black_x_positions[index] + 2
             width = 20
-            color = BLACK_NOTE_COLOR
-
-        # Height is proportional to duration, minimum 1px for very short notes
-        height = max(1, (duration_ms / 1000) * 50)  # 50 pixels per second of duration
-
-        pygame.draw.rect(screen, color, [x_pos, y_pos, width, height])
+            color = BLACK_NOTE_HIT_COLOR if note_has_been_hit else BLACK_NOTE_COLOR
+        
+        # Only draw the portion of the note that's visible below the header (y >= 120)
+        # and above the key line
+        
+        if note_has_been_hit:
+            # After hit, the note is being "consumed" from the bottom
+            # The bottom edge moves up from the key line toward the top
+            time_since_hit = now_ms - start_ms
+            consumed_progress = time_since_hit / duration_ms
+            consumed_height = height * consumed_progress
+            
+            # New bottom is moving up as note is consumed
+            new_bottom_y = key_line_y - consumed_height
+            
+            # Only draw if there's still note left visible
+            if new_bottom_y > 120 and top_y < key_line_y:
+                visible_top = max(120, top_y)
+                visible_bottom = min(new_bottom_y, key_line_y)
+                visible_height = visible_bottom - visible_top
+                
+                if visible_height > 0:
+                    pygame.draw.rect(screen, color, [x_pos, visible_top, width, visible_height])
+        else:
+            # Before hit, draw the note but stop at the key line
+            if bottom_y > 120:
+                visible_top = max(120, top_y)
+                visible_bottom = min(bottom_y, key_line_y)
+                visible_height = visible_bottom - visible_top
+                if visible_height > 0:
+                    pygame.draw.rect(screen, color, [x_pos, visible_top, width, visible_height])
 
 
 def draw_piano(whites, blacks):
@@ -345,6 +393,7 @@ def draw_hands():
 
 
 def draw_title_bar():
+    pygame.draw.rect(screen, "white", [0, 0, WIDTH, 120])
     instruction_text = medium_font.render(
         "Up/Down Arrows Change Left Hand", True, "black"
     )
@@ -412,7 +461,7 @@ while run:
         now_ms = pygame.time.get_ticks() - playback_start_time
 
         while current_msg_index < len(playback_messages):
-            start_ms, duration_ms, index, note_type, velocity = playback_messages[
+            start_ms, end_ms, index, note_type, velocity = playback_messages[
                 current_msg_index
             ]
             if now_ms >= start_ms:
@@ -427,7 +476,6 @@ while run:
                 if sound_to_play:
                     channel = play_note_with_limiter(sound_to_play, velocity)
                     if channel:
-                        end_ms = start_ms + duration_ms
                         playback_active_channels.append((channel, end_ms))
 
                 current_msg_index += 1
@@ -575,10 +623,12 @@ while run:
                 )
                 if midi_file_path:  # If a file was selected
                     if load_midi_file(midi_file_path):
-                        print("Starting playback...")
+                        print("Starting visualization...")
+                        # Start with negative time so notes fall into position
+                        playback_start_time = pygame.time.get_ticks() + LOOK_AHEAD_MS
                         playback_active = True
-                        playback_start_time = pygame.time.get_ticks()
                         current_msg_index = 0
+                        print(f"Notes will reach keys in {LOOK_AHEAD_MS}ms")
                     else:
                         print(f"Could not play {midi_file_path}")
 
