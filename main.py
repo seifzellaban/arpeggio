@@ -194,7 +194,7 @@ def draw_falling_notes(now_ms):
     """
     Draw notes where the BOTTOM (start_time) is fixed at key level,
     and the TOP (end_time) extends upward based on duration.
-    Notes change color when they hit the keys and disappear when end_time reaches keys.
+    Notes stay visible until their TOP reaches the key line.
     """
     look_ahead_ms = LOOK_AHEAD_MS
     key_line_y = HEIGHT - 300
@@ -219,25 +219,21 @@ def draw_falling_notes(now_ms):
 
     for start_ms, end_ms, index, note_type, velocity in visible_notes:
         # Calculate the BOTTOM of the note (where it will hit the keys)
-        time_to_impact = start_ms - now_ms
-        progress = 1 - (time_to_impact / look_ahead_ms)
-        bottom_y = 120 + (progress * FALL_DISTANCE)  # Bottom of note at key level when played
+        time_to_start = start_ms - now_ms
+        start_progress = 1 - (time_to_start / look_ahead_ms)
+        bottom_y = 120 + (start_progress * FALL_DISTANCE)
         
-        # Calculate note height based on duration
-        duration_ms = end_ms - start_ms
-        height = max(1, (duration_ms / 1000) * 50)  # 50 pixels per second
-        
-        # Top of note extends upward from the bottom
-        top_y = bottom_y - height
-        
-        # Determine color based on whether note has been hit
-        note_has_been_hit = now_ms >= start_ms
+        # Calculate the TOP of the note (when the note ends)
+        time_to_end = end_ms - now_ms
+        end_progress = 1 - (time_to_end / look_ahead_ms)
+        top_y = 120 + (end_progress * FALL_DISTANCE)
         
         # Calculate X position and width
         if note_type == "white":
             x_pos = index * 35 + 7.5
             width = 20
-            color = WHITE_NOTE_HIT_COLOR if note_has_been_hit else WHITE_NOTE_COLOR
+            falling_color = WHITE_NOTE_COLOR
+            active_color = WHITE_NOTE_HIT_COLOR
         else:  # black
             black_x_positions = [
                 23,93,163,198,233,303,338,408,443,478,548,583,653,688,723,
@@ -246,37 +242,46 @@ def draw_falling_notes(now_ms):
             ]
             x_pos = black_x_positions[index] + 2
             width = 20
-            color = BLACK_NOTE_HIT_COLOR if note_has_been_hit else BLACK_NOTE_COLOR
+            falling_color = BLACK_NOTE_COLOR
+            active_color = BLACK_NOTE_HIT_COLOR
         
-        # Only draw the portion of the note that's visible below the header (y >= 120)
-        # and above the key line
+        # Determine if the bottom has hit the keys
+        bottom_has_hit = bottom_y >= key_line_y
         
-        if note_has_been_hit:
-            # After hit, the note is being "consumed" from the bottom
-            # The bottom edge moves up from the key line toward the top
-            time_since_hit = now_ms - start_ms
-            consumed_progress = time_since_hit / duration_ms
-            consumed_height = height * consumed_progress
-            
-            # New bottom is moving up as note is consumed
-            new_bottom_y = key_line_y - consumed_height
-            
-            # Only draw if there's still note left visible
-            if new_bottom_y > 120 and top_y < key_line_y:
-                visible_top = max(120, top_y)
-                visible_bottom = min(new_bottom_y, key_line_y)
-                visible_height = visible_bottom - visible_top
-                
-                if visible_height > 0:
-                    pygame.draw.rect(screen, color, [x_pos, visible_top, width, visible_height])
+        # Determine if the top has reached the keys (note should disappear)
+        top_has_hit = top_y >= key_line_y
+        
+        if top_has_hit:
+            # Note is completely consumed, don't draw anything
+            continue
+        
+        # Calculate what portion of the note is visible
+        visible_top = max(120, top_y)
+        
+        if not bottom_has_hit:
+            # BEFORE BOTTOM HITS: Draw the entire falling note in original color
+            visible_bottom = min(bottom_y, key_line_y)
+            visible_height = visible_bottom - visible_top
+            if visible_height > 0:
+                pygame.draw.rect(screen, falling_color, [x_pos, visible_top, width, visible_height])
         else:
-            # Before hit, draw the note but stop at the key line
-            if bottom_y > 120:
-                visible_top = max(120, top_y)
-                visible_bottom = min(bottom_y, key_line_y)
-                visible_height = visible_bottom - visible_top
-                if visible_height > 0:
-                    pygame.draw.rect(screen, color, [x_pos, visible_top, width, visible_height])
+            # AFTER BOTTOM HITS: Split into two parts
+            
+            # Part 1: Above the key line (falling color)
+            if top_y < key_line_y:
+                above_top = visible_top
+                above_bottom = min(bottom_y, key_line_y)
+                above_height = above_bottom - above_top
+                if above_height > 0:
+                    pygame.draw.rect(screen, falling_color, [x_pos, above_top, width, above_height])
+            
+            # Part 2: At/below the key line (active color) - this is the "played" part
+            if bottom_y > key_line_y:
+                played_top = key_line_y
+                played_bottom = bottom_y
+                played_height = played_bottom - played_top
+                if played_height > 0:
+                    pygame.draw.rect(screen, active_color, [x_pos, played_top, width, played_height])
 
 
 def draw_piano(whites, blacks):
@@ -451,15 +456,15 @@ while run:
     g_active_channels = [ch for ch in g_active_channels if ch.get_busy()]
 
     now_ms = pygame.time.get_ticks() - playback_start_time
-
+    
+    # Handle channel fadeouts
     for ch, end_ms in list(playback_active_channels):
         if now_ms >= end_ms - FADEOUT_TIME:
             ch.fadeout(FADEOUT_TIME)
             playback_active_channels.remove((ch, end_ms))
 
+    # Handle playback note triggering
     if playback_active and current_msg_index < len(playback_messages):
-        now_ms = pygame.time.get_ticks() - playback_start_time
-
         while current_msg_index < len(playback_messages):
             start_ms, end_ms, index, note_type, velocity = playback_messages[
                 current_msg_index
@@ -486,9 +491,11 @@ while run:
             print("Playback finished.")
             playback_active = False
 
+    # Draw falling notes BEFORE piano (so piano keys appear on top)
     if playback_active:
         draw_falling_notes(now_ms)
 
+    # Draw piano on top of falling notes
     white_keys, black_keys, active_whites, active_blacks = draw_piano(
         active_whites, active_blacks
     )
