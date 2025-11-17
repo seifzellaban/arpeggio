@@ -34,8 +34,8 @@ FALL_DISTANCE = HEIGHT - 300 - 120  # Distance notes fall (from header to keys)
 screen = pygame.display.set_mode([WIDTH, HEIGHT])
 white_sounds = []
 black_sounds = []
-active_whites = []
-active_blacks = []
+active_whites = set()  # For user-played notes (keyboard/mouse)
+active_blacks = set()  # For user-played notes (keyboard/mouse)
 left_oct = 4
 right_oct = 5
 
@@ -68,9 +68,43 @@ BASE_NOTE_VOLUME = 0.4
 
 WHITE_NOTE_COLOR = (0, 255, 255)  # Cyan
 BLACK_NOTE_COLOR = (255, 0, 255)  # Magenta
-WHITE_NOTE_HIT_COLOR = (0, 200, 0)  # Green when hit
-BLACK_NOTE_HIT_COLOR = (0, 255, 0)  # Bright green when hit
+WHITE_NOTE_HIT_COLOR = (100, 200, 100)  # Green when hit
+BLACK_NOTE_HIT_COLOR = (50, 255, 50)  # Bright green when hit
 
+# Pressed key colors
+WHITE_KEY_PRESSED = (150, 255, 150)  # Light green for white keys
+BLACK_KEY_PRESSED = (0, 200, 0)  # Dark green for black keys
+
+# --- FIX 1: Black key positions - corrected to align with white keys ---
+BLACK_X_POSITIONS = []
+white_key_width = 35
+black_key_width = 24
+
+for i in range(len(white_notes)):
+    # Get the note letter (e.g., 'C' from 'C4')
+    note_name = white_notes[i]
+    note_letter = note_name[0]
+    
+    # Only add a black key if the current white note is C, D, F, G, or A
+    # (E and B do not have black keys to their right)
+    if note_letter in ['C', 'D', 'F', 'G', 'A']:
+        
+        # Calculate the center position between this white key and the next
+        black_x = (i * white_key_width) + white_key_width - (black_key_width // 2)
+        
+        # VISUAL CORRECTION - Nudge keys to create piano-like gaps
+        if note_letter == 'C':
+            black_x -= 3
+        elif note_letter == 'D':
+            black_x += 3
+        elif note_letter == 'F':
+            black_x -= 2
+        # G# (note_letter == 'G') is usually centered
+        elif note_letter == 'A':
+            black_x += 2
+            
+        BLACK_X_POSITIONS.append(black_x)
+# --- END FIX 1 ---
 
 
 for note in white_notes:
@@ -190,159 +224,105 @@ def play_note_with_limiter(sound_to_play, velocity):
         return None
 
 
+# --- FIX 3: Rewritten draw_falling_notes ---
 def draw_falling_notes(now_ms):
-    """
-    Draw notes where the BOTTOM (start_time) is fixed at key level,
-    and the TOP (end_time) extends upward based on duration.
-    Entire note changes color when bottom hits, disappears when top passes key line.
-    """
-    look_ahead_ms = LOOK_AHEAD_MS
     key_line_y = HEIGHT - 300
-    visible_notes = []
     
-    for i in range(current_msg_index, len(playback_messages)):
+    visible_notes = []
+    # Find all notes that are currently visible on screen
+    for i in range(len(playback_messages)):
         start_ms, end_ms, index, note_type, velocity = playback_messages[i]
         
-        # Only show notes that haven't finished yet
-        # The note finishes when its TOP would reach the key line (at end_ms)
+        # Optimization: Stop checking if start time is too far in future
+        if start_ms > now_ms + LOOK_AHEAD_MS:
+            break
+        # Optimization: Skip notes that have completely finished
         if end_ms < now_ms:
             continue
             
-        if start_ms > now_ms + look_ahead_ms:
-            break
-        
         visible_notes.append(playback_messages[i])
 
     # Sort by height descending (taller notes behind)
     visible_notes.sort(key=lambda x: -(x[1] - x[0]))
 
     for start_ms, end_ms, index, note_type, velocity in visible_notes:
-        # Calculate the BOTTOM of the note (where start_time is)
-        time_to_start = start_ms - now_ms
-        start_progress = 1 - (time_to_start / look_ahead_ms)
-        bottom_y = 120 + (start_progress * FALL_DISTANCE)
-        
-        # Calculate the TOP of the note (where end_time is)
+        # 1. Calculate Y position for the END of the note (Visual Top)
         time_to_end = end_ms - now_ms
-        end_progress = 1 - (time_to_end / look_ahead_ms)
+        end_progress = 1 - (time_to_end / LOOK_AHEAD_MS)
         top_y = 120 + (end_progress * FALL_DISTANCE)
         
-        # Don't draw if top has passed the key line
+        # 2. Calculate Y position for the START of the note (Visual Bottom)
+        time_to_start = start_ms - now_ms
+        start_progress = 1 - (time_to_start / LOOK_AHEAD_MS)
+        bottom_y = 120 + (start_progress * FALL_DISTANCE)
+        
+        # 3. Handle "Impact": Clamp the bottom to the key line
+        if bottom_y > key_line_y:
+            bottom_y = key_line_y
+
+        # 4. Clip to visible area (don't draw in header)
+        if top_y < 120:
+            top_y = 120
+
+        # 5. Stop drawing if the *top* has passed the key line
         if top_y >= key_line_y:
             continue
         
-        # Calculate X position and width
+        # 6. Calculate X position and width
         if note_type == "white":
             x_pos = index * 35 + 7.5
             width = 20
             falling_color = WHITE_NOTE_COLOR
             active_color = WHITE_NOTE_HIT_COLOR
         else:  # black
-            black_x_positions = [
-                23,93,163,198,233,303,338,408,443,478,548,583,653,688,723,
-                793,828,898,933,968,1038,1073,1143,1178,1213,1283,1318,1388,1423,1458,
-                1528,1563,1633,1668,1703,1773
-            ]
-            x_pos = black_x_positions[index] + 2
+            x_pos = BLACK_X_POSITIONS[index] + 2
             width = 20
             falling_color = BLACK_NOTE_COLOR
             active_color = BLACK_NOTE_HIT_COLOR
         
-        # Decide color: change to active color when bottom reaches key line
-        # This happens when now_ms >= start_ms (bottom_y >= key_line_y)
-        if now_ms >= start_ms:
-            color = active_color
-        else:
-            color = falling_color
+        # 7. Decide color: change to active color when note should be playing
+        current_color = active_color if (start_ms <= now_ms) else falling_color
         
-        # Clip to visible area (don't draw in header at y < 120)
-        visible_top = max(120, top_y)
-        visible_bottom = bottom_y
-        
-        # Calculate height
-        note_height = visible_bottom - visible_top
-        
-        # Draw the note if it has positive height
+        # 8. Draw the note
+        note_height = bottom_y - top_y
         if note_height > 0:
-            pygame.draw.rect(screen, color, [x_pos, visible_top, width, note_height])
+            pygame.draw.rect(screen, current_color, [x_pos, top_y, width, note_height])
+            pygame.draw.rect(screen, (0, 0, 0), [x_pos, top_y, width, note_height], 1)
+# --- END FIX 3 ---
 
 
 def draw_piano(whites, blacks):
+    """
+    Draw the piano keys with proper coloring based on pressed state.
+    whites and blacks are sets of indices that are currently pressed.
+    """
     white_rects = []
+    
+    # Draw white keys
     for i in range(52):
-        rect = pygame.draw.rect(screen, "white", [i * 35, HEIGHT - 300, 35, 300], 0, 2)
+        # Choose color based on whether key is pressed
+        key_color = WHITE_KEY_PRESSED if i in whites else "white"
+        rect = pygame.draw.rect(screen, key_color, [i * 35, HEIGHT - 300, 35, 300], 0, 2)
         white_rects.append(rect)
+        # Draw border
         pygame.draw.rect(screen, "black", [i * 35, HEIGHT - 300, 35, 300], 2, 2)
+        # Draw label
         key_label = small_font.render(white_notes[i], True, "black")
         screen.blit(key_label, (i * 35 + 3, HEIGHT - 20))
-    skip_count = 0
-    last_skip = 2
-    skip_track = 2
+    
+    # Draw black keys
     black_rects = []
     for i in range(36):
-        rect = pygame.draw.rect(
-            screen,
-            "black",
-            [23 + (i * 35) + (skip_count * 35), HEIGHT - 300, 24, 200],
-            0,
-            2,
-        )
-        for q in range(len(blacks)):
-            if blacks[q][0] == i:
-                if blacks[q][1] != 0:
-                    pygame.draw.rect(
-                        screen,
-                        "green",
-                        [23 + (i * 35) + (skip_count * 35), HEIGHT - 300, 24, 200],
-                        2,
-                        2,
-                    )
-                    if blacks[q][1] > 0:
-                        blacks[q][1] -= 1
-
-        key_label = real_small_font.render(black_labels[i], True, "white")
-        screen.blit(key_label, (25 + (i * 35) + (skip_count * 35), HEIGHT - 120))
+        x_pos = BLACK_X_POSITIONS[i]
+        # Choose color based on whether key is pressed
+        key_color = BLACK_KEY_PRESSED if i in blacks else "black"
+        rect = pygame.draw.rect(screen, key_color, [x_pos, HEIGHT - 300, 24, 200], 0, 2)
         black_rects.append(rect)
-        skip_track += 1
-        if last_skip == 2 and skip_track == 3:
-            last_skip = 3
-            skip_track = 0
-            skip_count += 1
-        elif last_skip == 3 and skip_track == 2:
-            last_skip = 2
-            skip_track = 0
-            skip_count += 1
+        # Draw label
+        key_label = real_small_font.render(black_labels[i], True, "white")
+        screen.blit(key_label, (x_pos + 2, HEIGHT - 120))
 
-    next_whites = []
-    for i in range(len(whites)):
-        if whites[i][1] > 0:
-            j = whites[i][0]
-            pygame.draw.rect(screen, "green", [j * 35, HEIGHT - 100, 35, 100], 2, 2)
-            whites[i][1] -= 1
-            if whites[i][1] > 0:
-                next_whites.append(whites[i])
-
-    next_blacks = []
-    black_x_positions = [
-        23,93,163,198,233,303,338,408,443,478,548,583,653,688,723,
-        793,828,898,933,968,1038,1073,1143,1178,1213,1283,1318,1388,1423,1458,
-        1528,1563,1633,1668,1703,1773
-    ]
-    for i in range(len(blacks)):
-        if blacks[i][1] > 0:
-            j = blacks[i][0]
-            pygame.draw.rect(
-                screen,
-                "green",
-                [black_x_positions[j], HEIGHT - 300, 24, 200],
-                2,
-                2,
-            )
-            blacks[i][1] -= 1
-            if blacks[i][1] > 0:
-                next_blacks.append(blacks[i])
-
-    return white_rects, black_rects, next_whites, next_blacks
+    return white_rects, black_rects
 
 
 def draw_hand(oct, hand):
@@ -390,8 +370,12 @@ def draw_title_bar():
         "Left/Right Arrows Change Right Hand", True, "black"
     )
     screen.blit(instruction_text2, (WIDTH - 500, 50))
-    instruction_text3 = medium_font.render("L to Load MIDI, S to Stop", True, "black")
+    
+    # --- FIX 2: Updated "Stop" key instruction ---
+    instruction_text3 = medium_font.render("L to Load MIDI, Backspace to Stop", True, "black")
     screen.blit(instruction_text3, (WIDTH - 500, 90))
+    # --- END FIX 2 ---
+    
     img = pygame.transform.scale(pygame.image.load("assets/logo.png"), [150, 150])
     screen.blit(img, (0, -34))
     title_text = font.render("A Project of the Resonance Committee.", True, "white")
@@ -436,17 +420,40 @@ while run:
     timer.tick(FPS)
     screen.fill("gray")
 
-    g_active_channels = [ch for ch in g_active_channels if ch.get_busy()]
-
-    now_ms = pygame.time.get_ticks() - playback_start_time
+    # --- FIX 4: Time-based visual state ---
     
-    # Handle channel fadeouts
+    # 1. Get current time
+    now_ms = pygame.time.get_ticks() - playback_start_time
+
+    # 2. Determine which keys the MIDI is playing *visually*
+    current_playback_whites = set()
+    current_playback_blacks = set()
+    
+    if playback_active:
+        # Iterate all messages to find active notes
+        # This is simple. For extreme performance, you'd use a windowed index.
+        for start_ms, end_ms, index, note_type, velocity in playback_messages:
+            if end_ms < now_ms: # Note is in the past
+                continue
+            if start_ms > now_ms: # Note is in the future
+                break # List is sorted, so we can stop
+            
+            # If we're here, start_ms <= now_ms <= end_ms (note is active)
+            if note_type == "white":
+                current_playback_whites.add(index)
+            else:
+                current_playback_blacks.add(index)
+
+    # 3. Handle Audio Triggers (This logic is now separate from visuals)
+    g_active_channels = [ch for ch in g_active_channels if ch.get_busy()]
+    
+    # Handle channel fadeouts (from audio)
     for ch, end_ms in list(playback_active_channels):
         if now_ms >= end_ms - FADEOUT_TIME:
             ch.fadeout(FADEOUT_TIME)
             playback_active_channels.remove((ch, end_ms))
 
-    # Handle playback note triggering
+    # Handle playback note *triggering* (AUDIO ONLY)
     if playback_active and current_msg_index < len(playback_messages):
         while current_msg_index < len(playback_messages):
             start_ms, end_ms, index, note_type, velocity = playback_messages[
@@ -456,10 +463,10 @@ while run:
                 sound_to_play = None
                 if note_type == "black":
                     sound_to_play = black_sounds[index]
-                    active_blacks.append([index, 30])
+                    # --- REMOVED: active_blacks.add(index) ---
                 else:
                     sound_to_play = white_sounds[index]
-                    active_whites.append([index, 30])
+                    # --- REMOVED: active_whites.add(index) ---
 
                 if sound_to_play:
                     channel = play_note_with_limiter(sound_to_play, velocity)
@@ -468,22 +475,29 @@ while run:
 
                 current_msg_index += 1
             else:
-                break
+                break # Stop checking, wait for next frame
 
-        if current_msg_index >= len(playback_messages):
+        # Check if playback is naturally finished
+        if current_msg_index >= len(playback_messages) and not playback_active_channels and not any(ch.get_busy() for ch in g_active_channels):
             print("Playback finished.")
             playback_active = False
+            
+    # --- OLD VISUAL CLEANUP LOGIC REMOVED (No longer needed) ---
 
-    # Draw falling notes BEFORE piano (so piano keys appear on top)
+    # 4. DRAWING
     if playback_active:
         draw_falling_notes(now_ms)
 
-    # Draw piano on top of falling notes
-    white_keys, black_keys, active_whites, active_blacks = draw_piano(
-        active_whites, active_blacks
-    )
+    # Combine User keys (active_*) with MIDI keys (current_playback_*)
+    final_active_whites = active_whites.union(current_playback_whites)
+    final_active_blacks = active_blacks.union(current_playback_blacks)
+    
+    # Draw piano with the final combined set of active keys
+    white_keys, black_keys = draw_piano(final_active_whites, final_active_blacks)
     draw_hands()
     draw_title_bar()
+
+    # --- END FIX 4 ---
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -496,10 +510,10 @@ while run:
         if event.type == pygame.KEYUP:
             if event.key == pygame.K_SPACE:
                 sustain_pedal_down = False
-        # When the pedal is released, stop all sustained notes
-        for channel in sustained_notes:
-            channel.stop()
-        sustained_notes.clear()
+                # When the pedal is released, stop all sustained notes
+                for channel in sustained_notes:
+                    channel.stop()
+                sustained_notes.clear()
 
         if event.type == pygame.MOUSEBUTTONDOWN:
             black_key = False
@@ -511,13 +525,20 @@ while run:
                     velocity = int((relative_y / key.height) * 127)
                     play_note_with_limiter(black_sounds[i], velocity)
                     black_key = True
-                    active_blacks.append([i, 30])
+                    active_blacks.add(i) # Add to user-played set
             for i, key in enumerate(white_keys):
                 if key.collidepoint(event.pos) and not black_key:
                     relative_y = event.pos[1] - key.y
                     velocity = int((relative_y / key.height) * 127)
                     play_note_with_limiter(white_sounds[i], velocity)
-                    active_whites.append([i, 30])
+                    active_whites.add(i) # Add to user-played set
+
+        if event.type == pygame.MOUSEBUTTONUP:
+            # Simple mouse-up: clear all user-played mouse notes
+            # This doesn't track individual sustained mouse keys
+            active_whites.clear()
+            active_blacks.clear()
+            pass
 
         if event.type == pygame.KEYDOWN:
             key = event.unicode.upper()
@@ -525,8 +546,8 @@ while run:
                 keys_pressed.add(key)
                 note_name = left_dict.get(key) or right_dict.get(key)
 
-                if note_name and note_name not in active_keyboard_notes:
-                    # --- New velocity logic ---
+                if note_name:
+                    # --- Velocity logic based on timing ---
                     now = pygame.time.get_ticks()
                     velocity = 90  # Default for the very first note
                     if key_press_times:
@@ -546,18 +567,11 @@ while run:
                                 * (max_vel - min_vel)
                             )
                     key_press_times.append(now)
-                    # --- End of new logic ---
 
-                    # If key already active, stop it and remove highlights
+                    # If key already active, stop it first
                     if note_name in active_keyboard_notes:
-                        old_channel = active_keyboard_notes.pop(note_name)
+                        old_channel = active_keyboard_notes[note_name]
                         old_channel.stop()
-                        if "#" in note_name:
-                            index = black_labels.index(note_name)
-                            active_blacks = [b for b in active_blacks if b[0] != index]
-                        else:
-                            index = white_notes.index(note_name)
-                            active_whites = [w for w in active_whites if w[0] != index]
 
                     if "#" in note_name:
                         index = black_labels.index(note_name)
@@ -565,16 +579,14 @@ while run:
                         channel = play_note_with_limiter(sound_to_play, velocity)
                         if channel:
                             active_keyboard_notes[note_name] = channel
-                            if not sustain_pedal_down:
-                                active_blacks.append([index, 30])
+                            active_blacks.add(index) # Add to user-played set
                     else:
                         index = white_notes.index(note_name)
                         sound_to_play = white_sounds[index]
                         channel = play_note_with_limiter(sound_to_play, velocity)
                         if channel:
                             active_keyboard_notes[note_name] = channel
-                            if not sustain_pedal_down:
-                                active_whites.append([index, 30])
+                            active_whites.add(index) # Add to user-played set
 
         if event.type == pygame.KEYUP:
             key = event.unicode.upper()
@@ -590,18 +602,13 @@ while run:
                 else:
                     channel.fadeout(FADEOUT_TIME)
 
+                # Remove from user-played sets
                 if "#" in note_name:
                     index = black_labels.index(note_name)
-                    for i, black in enumerate(active_blacks):
-                        if black[0] == index:
-                            active_blacks.pop(i)
-                            break
+                    active_blacks.discard(index)
                 else:
                     index = white_notes.index(note_name)
-                    for i, white in enumerate(active_whites):
-                        if white[0] == index:
-                            active_whites.pop(i)
-                            break
+                    active_whites.discard(index)
 
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_l:
@@ -622,11 +629,25 @@ while run:
                     else:
                         print(f"Could not play {midi_file_path}")
 
-            if event.key == pygame.K_s:
+            # --- FIX 2: Stop key changed to K_BACKSPACE ---
+            if event.key == pygame.K_BACKSPACE:
+                print("Playback stopped by user.")
                 playback_active = False
+                # Stop all playing MIDI sounds
                 for channel, end_ms in playback_active_channels:
                     channel.fadeout(FADEOUT_TIME)
                 playback_active_channels.clear()
+                
+                # Stop all USER-held sounds
+                for channel in active_keyboard_notes.values():
+                    channel.fadeout(FADEOUT_TIME)
+                active_keyboard_notes.clear()
+
+                # Clear all visual active notes
+                active_blacks.clear()
+                active_whites.clear()
+                # current_playback sets will be cleared on next frame's loop
+            # --- END FIX 2 ---
 
             if event.key == pygame.K_RIGHT:
                 if right_oct < 8:
